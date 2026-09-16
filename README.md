@@ -1,5 +1,7 @@
 # Media Toolkit — Google Colab Scripts
 
+> ⚠️ **Sebelum melakukan refactor atau kontribusi apa pun**, baca [`docs/INSTRUCTION.md`](./docs/INSTRUCTION.md) dan [`CONTRIBUTING.md`](./CONTRIBUTING.md) terlebih dahulu. Jika menggunakan AI assistant, lihat juga [`AGENTS.md`](./AGENTS.md).
+
 Kumpulan script Python untuk kebutuhan download, upload, dan pengolahan
 media (audio & video), dirancang khusus untuk dijalankan di **Google
 Colab**. Setiap script bersifat *standalone* — dijalankan sebagai satu
