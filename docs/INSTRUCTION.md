@@ -27,7 +27,8 @@
 7. Retry only errors that are actually retryable (timeouts, rate limits).
 8. No abstraction (enum/factory/wrapper) without a concrete, current need.
 9. Small, reviewable refactors beat one large rewrite.
-10. When in doubt: preserve existing behavior, don't improvise.
+10. All code, comments, logs, commit messages, and docs are written in English.
+11. When in doubt: preserve existing behavior, don't improvise.
 ```
 
 ---
@@ -703,6 +704,11 @@ Define logging levels explicitly so they are used consistently:
 Avoid using `print()` directly outside `log()` for messages that carry one of
 these levels — consistent with section 9.1.
 
+## 9.5 Language
+
+All log and console output text must be written in English. See section 31
+("Language Consistency") for the full rule and its scope.
+
 ---
 
 # 10. Data and Return Values
@@ -772,7 +778,8 @@ Do not casually change the order of filesystem or state operations during refact
 
 # 12. Naming Conventions
 
-Use descriptive names consistently.
+Use descriptive names consistently. All names, in every language context
+described here, must be in English — see section 31.
 
 ### Variables
 
@@ -893,6 +900,11 @@ Whenever behavior changes, update affected comments/docstrings.
 Use concise docstrings when a function's behavior, side effects, or constraints are not obvious.
 
 Do not write documentation that merely repeats the function name.
+
+## 14.4 Language
+
+All comments and docstrings are written in English, regardless of the
+language used elsewhere in the project's history. See section 31.
 
 ---
 
@@ -1034,6 +1046,11 @@ Do not combine unrelated changes such as:
 unless there is a clear reason.
 
 A refactor should be easy to review and, if necessary, easy to revert.
+
+This also applies to language translation work (section 31): a
+project-wide, translation-only pass is its own change, separate from a
+structural refactor, unless the two are small enough together to stay
+easy to review.
 
 ---
 
@@ -1196,6 +1213,9 @@ docs: update project instructions
 
 Avoid large commits containing unrelated changes.
 
+Commit messages are written in English (see section 31), regardless of
+what language earlier commits in the project's history used.
+
 Do not commit:
 
 - generated temporary files,
@@ -1321,6 +1341,7 @@ Before considering a refactor complete, verify:
 - [ ] Persistent-runtime state assumptions have been checked, if applicable (section 4.4).
 - [ ] Strategy/backend selection logic stays in one place, if applicable (section 5.5).
 - [ ] Partial/failed long-running operations are handled explicitly, if applicable (section 7.1).
+- [ ] Any code, comments, logs, or docs touched in this change are in English (section 31).
 
 ---
 
@@ -1345,7 +1366,10 @@ communication rules so the results can be reviewed easily.
   - renaming an internal helper that is clearly only used locally,
   - splitting a large function that clearly violates the Single
     Responsibility Principle (section 1.2), as long as behavior is
-    unchanged.
+    unchanged,
+  - translating existing non-English comments/logs/docs in a file already
+    being touched for another reason into English (section 31) — as long
+    as the translation does not change behavior or meaning.
 - **Every refactoring session should end with a summary:**
   - the list of files/functions changed,
   - any behavior that was intentionally changed, and why,
@@ -1354,7 +1378,64 @@ communication rules so the results can be reviewed easily.
 
 ---
 
-# 31. Golden Rule
+# 31. Language Consistency
+
+## 31.1 English Only
+
+All code, comments, docstrings, log/console messages, commit messages,
+and documentation in this project must be written in **English**, even
+where existing files mix English and other languages (e.g. Indonesian).
+
+This applies to:
+
+- variable, function, and class names (already covered by the naming
+  rules in section 2 and section 12),
+- inline comments and docstrings (section 14.4),
+- log/print messages, including `log("...")` calls, exception messages,
+  and anything printed to console or notebook output (section 9.5),
+- error messages and other user-facing strings printed to
+  console/output,
+- markdown documentation (`README.md`, `ROADMAP.md`, `PROGRESS.md`,
+  `TESTING.md`, `docs/`, etc.),
+- commit messages (section 26),
+- PR and issue descriptions.
+
+## 31.2 Applying This During Refactoring
+
+When a file is touched during a refactor for any reason, also bring its
+language in line with this rule as part of that same change, instead of
+leaving it for a separate pass:
+
+- If a function or file being refactored has non-English log messages,
+  comments, or docstrings, translate them to English in the same
+  change.
+- Translation must be text-only — do not change behavior while
+  translating (see section 1.1, "Preserve Existing Behavior"). If a
+  literal translation would change meaning, lose information, or
+  become awkward, prefer a clear rewrite over a mechanical one, and
+  call out anything non-obvious in the change summary (section 30).
+- Do not open and edit files that are otherwise untouched by the
+  current change *only* to translate them. Batch pure-translation work
+  into its own dedicated, focused change (section 19, "Incremental
+  Changes") unless the user has explicitly asked for a project-wide
+  translation pass.
+
+## 31.3 Exceptions
+
+- Text that must match an external API, tool, or service exactly (for
+  example, reproducing an upstream error message verbatim) should not
+  be mistranslated or altered — keep it as-is, and add an English
+  comment nearby if clarification is useful.
+- User-facing product copy that is deliberately localized for a
+  specific audience (for example, a bot's reply text intentionally
+  written for Indonesian-speaking users) is a product decision, not a
+  code-quality issue. Confirm with the user before changing user-facing
+  copy of this kind, even though the surrounding code, comments, and
+  logs should still follow the English-only rule.
+
+---
+
+# 32. Golden Rule
 
 > **Refactor to make the code easier to understand, not merely different.**
 
@@ -1372,6 +1453,8 @@ Explicit
 Maintainable
     +
 Behavior-compatible
+    +
+Consistently in English
 ```
 
 —not maximum abstraction.
