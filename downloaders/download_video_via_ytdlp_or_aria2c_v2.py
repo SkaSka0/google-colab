@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 
 import requests
@@ -116,6 +117,73 @@ NOT_FOUND_KEYWORDS = [
 
 
 # ============================================================
+# ⚙️ APPLICATION CONFIGURATION (dataclasses)
+# ============================================================
+# Groups the #@param globals above into a single config object,
+# converted once at a clear boundary (_create_app_config), instead of
+# being read directly deep inside the download/backend/batch logic.
+# See docs/INSTRUCTION.md §3-4.
+
+@dataclass
+class Aria2Config:
+    connections: int = 8
+    split_count: int = 8
+    segments: int = 8
+    min_split_size: str = '2M'
+    file_allocation: str = 'none'
+
+
+@dataclass
+class DownloaderConfig:
+    backend: str = 'yt-dlp'
+    timeout: int = 1800
+
+
+@dataclass
+class BatchConfig:
+    json_path: str = ''
+    enabled: bool = True
+    checkpoint_size: int = 5
+
+
+@dataclass
+class AppConfig:
+    output_dir: str
+    downloader: DownloaderConfig
+    aria2: Aria2Config
+    batch: BatchConfig
+
+
+def _create_app_config() -> AppConfig:
+    """Build AppConfig from the current Colab input values.
+
+    Called once per run inside main(). Always constructs a fresh
+    object — never cache or reuse a previous instance, since a Colab
+    cell can be re-executed within the same long-lived kernel session
+    (docs/INSTRUCTION.md §4, persistent runtime safety).
+    """
+    return AppConfig(
+        output_dir=output_dir,
+        downloader=DownloaderConfig(
+            backend=backend,
+            timeout=download_timeout,
+        ),
+        aria2=Aria2Config(
+            connections=aria2c_connections,
+            split_count=aria2c_split,
+            segments=aria2c_segments,
+            min_split_size=aria2c_min_split_size,
+            file_allocation=aria2c_file_allocation,
+        ),
+        batch=BatchConfig(
+            json_path=filename,
+            enabled=batch_processing,
+            checkpoint_size=BATCH_CHECKPOINT_SIZE,
+        ),
+    )
+
+
+# ============================================================
 # 🔧 UTILITY FUNCTIONS
 # ============================================================
 
@@ -124,7 +192,7 @@ def log(message: str, level: str = 'INFO') -> None:
     print(f'[{level}] {message}', flush=True)
 
 
-def get_storage_info(path: str = '/content') -> str:
+def _get_storage_info(path: str = '/content') -> str:
     """Return available and total storage in GB."""
     try:
         total, used, free = shutil.disk_usage(path)
@@ -135,12 +203,12 @@ def get_storage_info(path: str = '/content') -> str:
         return 'Unknown'
 
 
-def build_download_url(code: str) -> str:
+def _build_download_url(code: str) -> str:
     """Build the video download URL from the global template."""
     return DOWNLOAD_URL_TEMPLATE.format(code=code.upper())
 
 
-def build_source_urls(code: str) -> list[str]:
+def _build_source_urls(code: str) -> list[str]:
     """Build all title-scraping source URLs from the global templates."""
     return [
         source.format(code=code.lower())
@@ -152,7 +220,7 @@ def build_source_urls(code: str) -> list[str]:
 # 📦 DEPENDENCY MANAGEMENT
 # ============================================================
 
-def ensure_pip_package(
+def _ensure_pip_package(
     pkg_name: str,
     import_name: str | None = None,
     upgrade: bool = False,
@@ -189,7 +257,7 @@ def ensure_pip_package(
         log(f'{pkg_name} installed successfully')
 
 
-def ensure_binary(binary_name: str, install_cmd: list[str]) -> None:
+def _ensure_binary(binary_name: str, install_cmd: list[str]) -> None:
     """Install a system binary if it is not available."""
     result = subprocess.run(
         ['which', binary_name],
@@ -205,21 +273,23 @@ def ensure_binary(binary_name: str, install_cmd: list[str]) -> None:
         log(f'{binary_name} already installed')
 
 
-def install_deps() -> None:
+def _install_dependencies(downloader: DownloaderConfig) -> None:
     """Install all dependencies required by the configured backend."""
+    backend = downloader.backend
+
     log('Starting dependency setup...')
 
-    ensure_pip_package('requests')
-    ensure_pip_package('beautifulsoup4', import_name='bs4')
-    ensure_pip_package('yt-dlp', import_name='yt_dlp')
+    _ensure_pip_package('requests')
+    _ensure_pip_package('beautifulsoup4', import_name='bs4')
+    _ensure_pip_package('yt-dlp', import_name='yt_dlp')
 
     if backend.lower() == 'aria2c':
-        ensure_binary(
+        _ensure_binary(
             'aria2c',
             ['apt-get', 'install', '-y', 'aria2'],
         )
 
-    ensure_binary(
+    _ensure_binary(
         'ffprobe',
         ['apt-get', 'install', '-y', 'ffmpeg'],
     )
@@ -231,7 +301,7 @@ def install_deps() -> None:
 # 🔎 TITLE SCRAPING
 # ============================================================
 
-def extract_markdown_title(markdown: str) -> str:
+def _extract_markdown_title(markdown: str) -> str:
     """Extract the first Markdown heading from scraped content."""
     for line in markdown.splitlines():
         line = line.strip()
@@ -245,7 +315,7 @@ def extract_markdown_title(markdown: str) -> str:
     return ''
 
 
-def scrape_title(code: str) -> str:
+def _scrape_title(code: str) -> str:
     """Try each configured source until a valid title is found."""
     try:
         api_key = userdata.get(FIRECRAWL_API_KEY_NAME)
@@ -263,7 +333,7 @@ def scrape_title(code: str) -> str:
         'Content-Type': 'application/json',
     }
 
-    for target_url in build_source_urls(code):
+    for target_url in _build_source_urls(code):
         log(
             f'⏳ Meminta bantuan Firecrawl untuk menembus: '
             f'{target_url}'
@@ -327,7 +397,7 @@ def scrape_title(code: str) -> str:
             )
 
             if not scraped_title and markdown:
-                scraped_title = extract_markdown_title(markdown)
+                scraped_title = _extract_markdown_title(markdown)
 
             if not scraped_title:
                 log(
@@ -376,7 +446,7 @@ def scrape_title(code: str) -> str:
 # 📄 JSON / BATCH FILE MANAGEMENT
 # ============================================================
 
-def load_batch_json(json_path: str) -> list:
+def _load_batch_json(json_path: str) -> list:
     """Load and validate the batch JSON file."""
     if not os.path.isfile(json_path):
         raise FileNotFoundError(
@@ -393,7 +463,7 @@ def load_batch_json(json_path: str) -> list:
     return data
 
 
-def save_batch_json(json_path: str, data: list) -> bool:
+def _save_batch_json(json_path: str, data: list) -> bool:
     """Atomically save the batch JSON as a checkpoint."""
     json_path = os.path.abspath(json_path)
     directory = os.path.dirname(json_path)
@@ -440,7 +510,7 @@ def save_batch_json(json_path: str, data: list) -> bool:
 # 📝 FILENAME / VIDEO METADATA
 # ============================================================
 
-def sanitize_filename(filename: str) -> str:
+def _sanitize_filename(filename: str) -> str:
     """Convert a title into a filesystem-friendly filename."""
     if not filename or not filename.strip():
         wib_tz = timezone(timedelta(hours=7))
@@ -462,7 +532,7 @@ def sanitize_filename(filename: str) -> str:
     return sanitized
 
 
-def get_video_metadata(file_path: str) -> dict:
+def _get_video_metadata(file_path: str) -> dict:
     """Read basic video metadata using ffprobe."""
     try:
         cmd = [
@@ -568,8 +638,9 @@ def get_video_metadata(file_path: str) -> dict:
         }
 
 
-def analyze_downloaded_files(
+def _analyze_downloaded_files(
     original_files: set[str],
+    output_dir: str,
 ) -> dict:
     """Analyze video files in the configured output directory."""
     summary = {
@@ -614,7 +685,7 @@ def analyze_downloaded_files(
 
     for video_file in video_files:
         file_path = os.path.join(output_dir, video_file)
-        metadata = get_video_metadata(file_path)
+        metadata = _get_video_metadata(file_path)
 
         metadata['filename'] = video_file
         summary['files_metadata'].append(metadata)
@@ -662,7 +733,7 @@ def analyze_downloaded_files(
     return summary
 
 
-def print_download_summary(summary: dict) -> None:
+def _print_download_summary(summary: dict, output_dir: str) -> None:
     """Print the download summary."""
     total_size_mb = summary['total_size_bytes'] / 1024 ** 2
     new_size_mb = summary['new_files_size_bytes'] / 1024 ** 2
@@ -683,7 +754,7 @@ def print_download_summary(summary: dict) -> None:
         else 'None'
     )
 
-    storage_info = get_storage_info()
+    storage_info = _get_storage_info()
 
     print('📊 DOWNLOAD SUMMARY')
     print(f'├─ Output Directory         : {output_dir}')
@@ -716,9 +787,10 @@ def print_download_summary(summary: dict) -> None:
 # ⬇️ DOWNLOADER
 # ============================================================
 
-def build_base_command(
+def _build_base_command(
     download_url: str,
     filename_template: str,
+    output_dir: str,
 ) -> list[str]:
     """Build the base yt-dlp command."""
     temp_dir = os.path.join(output_dir, 'temp')
@@ -743,8 +815,19 @@ def build_base_command(
     ]
 
 
-def inject_backend(cmd: list[str]) -> list[str]:
+def _add_downloader_backend_arguments(
+    cmd: list[str],
+    downloader: DownloaderConfig,
+    aria2: Aria2Config,
+) -> list[str]:
     """Add the configured downloader backend options."""
+    backend = downloader.backend
+    aria2c_connections = aria2.connections
+    aria2c_split = aria2.split_count
+    aria2c_segments = aria2.segments
+    aria2c_min_split_size = aria2.min_split_size
+    aria2c_file_allocation = aria2.file_allocation
+
     if backend.lower() == 'aria2c':
         args = (
             f'aria2c:'
@@ -767,7 +850,7 @@ def inject_backend(cmd: list[str]) -> list[str]:
     return cmd
 
 
-def truncate_filename(
+def _truncate_filename_for_display(
     name: str,
     max_len: int = 10,
 ) -> str:
@@ -778,7 +861,7 @@ def truncate_filename(
     return name[:max_len - 3] + '...'
 
 
-def make_bar(
+def _create_progress_bar(
     percent: float,
     width: int = 10,
 ) -> str:
@@ -791,7 +874,7 @@ def make_bar(
     )
 
 
-def build_file_progress_prefix(
+def _build_file_progress_prefix(
     file_index: int,
     file_total: int,
 ) -> str:
@@ -805,14 +888,14 @@ def build_file_progress_prefix(
     return f'[FILE ke {file_index}/{file_total}]'
 
 
-def handle_progress_line(
+def _handle_download_progress_line(
     line: str,
     display_name: str,
     file_index: int = 1,
     file_total: int = 1,
 ) -> bool:
     """Handle yt-dlp / aria2c progress output."""
-    prefix = build_file_progress_prefix(file_index, file_total)
+    prefix = _build_file_progress_prefix(file_index, file_total)
 
     if '[download]' in line and '%' in line:
         match = re.search(
@@ -833,8 +916,8 @@ def handle_progress_line(
                 frag_total,
             ) = match.groups()
 
-            bar = make_bar(float(percent))
-            fname = truncate_filename(
+            bar = _create_progress_bar(float(percent))
+            fname = _truncate_filename_for_display(
                 display_name or 'Downloads'
             )
 
@@ -868,13 +951,16 @@ def handle_progress_line(
     return False
 
 
-def run_downloader(
+def _run_download_process(
     cmd: list[str],
     display_name: str,
+    downloader: DownloaderConfig,
     file_index: int = 1,
     file_total: int = 1,
 ) -> bool:
     """Run the downloader process and handle its output."""
+    download_timeout = downloader.timeout
+
     fatal_errors = [
         'errorCode=24',
         'Authorization failed',
@@ -908,7 +994,7 @@ def run_downloader(
                 process.wait()
                 return False
 
-            if handle_progress_line(
+            if _handle_download_progress_line(
                 line,
                 display_name,
                 file_index,
@@ -971,11 +1057,15 @@ def run_downloader(
 def download_video(
     download_url: str,
     filename: str,
+    config: AppConfig,
     skip_scrape: bool = False,
     file_index: int = 1,
     file_total: int = 1,
 ) -> bool:
-    """Download one video using the global configuration."""
+    """Download one video using the supplied configuration."""
+    output_dir = config.output_dir
+    backend = config.downloader.backend
+
     if skip_scrape:
         target_name = filename
         log(
@@ -984,7 +1074,7 @@ def download_video(
         )
 
     else:
-        scraped_title = scrape_title(filename)
+        scraped_title = _scrape_title(filename)
 
         log(f"Scrape Title: '{scraped_title}'")
 
@@ -994,13 +1084,13 @@ def download_video(
             else filename
         )
 
-    sanitized_filename = sanitize_filename(target_name)
+    sanitized_filename = _sanitize_filename(target_name)
 
     log(
         f"Filename: '{sanitized_filename}'"
     )
 
-    storage_info = get_storage_info()
+    storage_info = _get_storage_info()
 
     log(
         f'Colab Storage Available: {storage_info}'
@@ -1026,31 +1116,34 @@ def download_video(
         f'{sanitized_filename}.%(ext)s'
     )
 
-    cmd = build_base_command(
+    cmd = _build_base_command(
         download_url,
         filename_template,
+        output_dir,
     )
 
-    cmd = inject_backend(cmd)
+    cmd = _add_downloader_backend_arguments(cmd, config.downloader, config.aria2)
 
     log(
         f'🎬 [FILE ke {file_index}/{file_total}] Starting download with '
         f'{backend.upper()}'
     )
 
-    success = run_downloader(
+    success = _run_download_process(
         cmd,
         target_name,
+        config.downloader,
         file_index,
         file_total,
     )
 
     if success:
-        summary = analyze_downloaded_files(
-            original_files
+        summary = _analyze_downloaded_files(
+            original_files,
+            output_dir,
         )
 
-        print_download_summary(summary)
+        _print_download_summary(summary, output_dir)
 
     return success
 
@@ -1059,9 +1152,11 @@ def download_video(
 # 📦 BATCH PROCESSING
 # ============================================================
 
-def process_batch(json_path: str) -> None:
+def process_batch(json_path: str, config: AppConfig) -> None:
     """Process all pending items from the batch JSON."""
-    batch_items = load_batch_json(json_path)
+    checkpoint_size = config.batch.checkpoint_size
+
+    batch_items = _load_batch_json(json_path)
     total = len(batch_items)
 
     if total == 0:
@@ -1084,7 +1179,7 @@ def process_batch(json_path: str) -> None:
     log(f'📦 Total item : {total}')
     log(
         f'💾 Checkpoint : setiap '
-        f'{BATCH_CHECKPOINT_SIZE} file sukses'
+        f'{checkpoint_size} file sukses'
     )
     log('=' * 60)
 
@@ -1148,13 +1243,14 @@ def process_batch(json_path: str) -> None:
         log(f'Title : {title}')
         log('=' * 60)
 
-        download_url = build_download_url(code)
+        download_url = _build_download_url(code)
 
         log(f'🔗 URL: {download_url}')
 
         success = download_video(
             download_url=download_url,
             filename=title,
+            config=config,
             skip_scrape=True,
             file_index=index,
             file_total=total,
@@ -1169,13 +1265,13 @@ def process_batch(json_path: str) -> None:
             log(
                 f'✅ Download berhasil '
                 f'({checkpoint_success_count}/'
-                f'{BATCH_CHECKPOINT_SIZE} '
+                f'{checkpoint_size} '
                 'menuju checkpoint)'
             )
 
             if (
                 checkpoint_success_count
-                >= BATCH_CHECKPOINT_SIZE
+                >= checkpoint_size
             ):
                 log('')
                 log('💾 CHECKPOINT')
@@ -1185,7 +1281,7 @@ def process_batch(json_path: str) -> None:
                     'download berhasil ke JSON...'
                 )
 
-                saved = save_batch_json(
+                saved = _save_batch_json(
                     json_path,
                     batch_items,
                 )
@@ -1223,7 +1319,7 @@ def process_batch(json_path: str) -> None:
             'file sukses yang tersisa...'
         )
 
-        saved = save_batch_json(
+        saved = _save_batch_json(
             json_path,
             batch_items,
         )
@@ -1280,24 +1376,26 @@ def process_batch(json_path: str) -> None:
 
 def main() -> None:
     """Application entry point."""
-    install_deps()
+    config = _create_app_config()
+    _install_dependencies(config.downloader)
 
-    if batch_processing:
+    if config.batch.enabled:
         log('')
         log('🔄 Batch processing mode aktif')
-        log(f'📄 Input JSON: {filename}')
+        log(f'📄 Input JSON: {config.batch.json_path}')
 
-        process_batch(filename)
+        process_batch(config.batch.json_path, config)
 
     else:
         log('')
         log('🎯 Single file mode aktif')
 
-        download_url = build_download_url(filename)
+        download_url = _build_download_url(filename)
 
         success = download_video(
             download_url=download_url,
             filename=filename,
+            config=config,
             skip_scrape=False,
             file_index=1,
             file_total=1,
