@@ -1,1460 +1,271 @@
 # Project Refactoring & Coding Instructions
 
-> **Purpose:** This document defines general-purpose coding, refactoring, naming,
-> architecture, and quality rules to apply when refactoring any codebase.
->
-> All future refactoring should follow these rules unless a specific exception is
-> explicitly agreed upon.
->
-> **Scope note:** Some sections describe patterns for specific situations (e.g.
-> building external commands, long-running external operations, notebook-style
-> runtimes). Apply the general principles in every project. Apply the
-> situation-specific patterns only when they are relevant to the codebase being
-> refactored — skip a section entirely if it does not apply.
-
----
+> Purpose: general-purpose coding, refactoring, naming, and architecture
+> rules for this repo. Apply the general principles everywhere; apply the
+> situation-specific patterns (external commands, long-running tasks,
+> notebook-style runtimes) only where relevant.
 
 ## Quick Reference
 
 ```text
-1. Do not change behavior/user-facing output unless explicitly requested.
+1. Do not change behavior/output unless explicitly requested.
 2. Public function: no leading underscore. Private helper: prefix with `_`.
-3. One function, one responsibility. Do not split code merely to shrink it.
-4. Group related configuration into dataclasses, but avoid one giant "god object".
-5. Persistent runtimes (notebooks, long-lived processes): never assume clean
-   state between runs. Rebuild configuration each time.
+3. One function, one responsibility. Don't split code merely to shrink it.
+4. Group related config into dataclasses; avoid one giant "god object".
+5. Persistent runtimes (notebooks, long-lived processes): never assume
+   clean state between runs — rebuild configuration each time.
 6. Separate concerns: build → execute → parse output → summarize.
 7. Retry only errors that are actually retryable (timeouts, rate limits).
 8. No abstraction (enum/factory/wrapper) without a concrete, current need.
 9. Small, reviewable refactors beat one large rewrite.
-10. All code, comments, logs, commit messages, and docs are written in English.
+10. All code, comments, logs, commits, and docs are written in English.
 11. When in doubt: preserve existing behavior, don't improvise.
 ```
 
 ---
 
-# 1. Core Principles
+## 1. Core Principles
 
-## 1.1 Preserve Existing Behavior
+- **Preserve behavior.** Unless explicitly requested, don't change
+  functionality, remove features, change defaults/output formats/CLI
+  args, or "fix" behavior that may be intentional without discussing it
+  first. If behavior must change, call it out explicitly and explain why.
+- **Single Responsibility.** A function shouldn't validate input, build
+  payloads, run processes, parse output, format UI, *and* save results
+  all at once. Extract helpers for meaningful responsibilities — not
+  just to make a function shorter.
+- **Descriptive names.** Prefer `_build_request_payload()` over
+  `_process()`/`_handle()`. A reader should understand a function's
+  purpose from its name alone.
 
-Refactoring must primarily improve the **internal structure of the code without changing its external behavior**.
+## 2. Naming
 
-Unless explicitly requested:
+- **Public** functions (called from outside the module): no leading `_`.
+- **Private/internal** helpers: prefix with `_`.
+- Avoid generic names (`process`, `handle`, `run`, `manager`, `utils`)
+  unless the scope is genuinely obvious — prefer names that describe the
+  operation (`_handle_progress_line`, `_build_command`).
+- Booleans should read as conditions: `use_cache`, `use_retry`, not
+  `cache`, `retry`.
+- Constants: `UPPER_CASE`. Classes: `PascalCase`. Functions/vars: `snake_case`.
 
-- Do not change the program's functionality.
-- Do not remove existing features.
-- Do not change user-facing behavior.
-- Do not change default values.
-- Do not change command-line/tool arguments.
-- Do not change output formats unnecessarily.
-- Do not introduce breaking changes.
-- Do not "fix" behavior that may be intentional without discussing it first.
+## 3. Configuration
 
-When behavior must change, clearly identify the change and explain why.
+- Avoid long parameter lists — group related config into dataclasses
+  (e.g. `AppConfig` containing `IOOptions`, `BackendConfig`,
+  `RetryConfig`, etc.), but don't create a class for every 1–2 vars.
+- Keep the *operation's own inputs* (e.g. `task_input`, `output_name`)
+  separate from reusable *configuration* objects.
+- Convert raw external/UI inputs into the internal config object in
+  **one place** (e.g. `_create_app_config()`) — that's the boundary
+  between input and application logic.
+- Derive values at a clear boundary instead of duplicating state.
+- Don't use frozen/immutable config unless concurrency genuinely needs it.
 
-## 1.2 Single Responsibility Principle
+## 4. Global Variables & State
 
-Every function should have **one clear responsibility**.
+- Don't let functions silently depend on globals when the value belongs
+  in their parameters — dependencies should be visible in the signature.
+- External inputs may stay as raw globals, but application logic should
+  route through one conversion boundary, not depend on those globals
+  directly and repeatedly.
+- Avoid unexpected side effects on unrelated global state.
 
-A function should not simultaneously:
+### Persistent Runtime Safety (notebooks, long-lived processes, REPLs)
 
-- validate input,
-- modify configuration,
-- build commands or payloads,
-- start processes,
-- parse output,
-- handle errors,
-- format UI output,
-- and save results.
+- **Never assume clean state** between runs in the same session/process.
+  Rebuild all configuration from scratch every time the entry point runs.
+- Config-builder functions must always construct a **new** object, never
+  mutate a previous instance.
+- Don't store operation state (progress, results) in module-level
+  globals that persist across runs.
+- Setup/dependency-install routines must be **idempotent** — check
+  before (re)installing or (re)initializing anything (mounted storage,
+  open connections, cached clients).
 
-If a function is doing several independent jobs, consider extracting focused helper functions.
+## 5. Architecture
 
-However:
+- Prefer clear layers: input/config → preparation → command/payload
+  construction → execution → output processing → analysis → summary.
+- High-level public functions should **orchestrate**, not contain every
+  implementation detail.
+- Give helpers clear, single-concern boundaries (e.g. `_build_command()`
+  delegating to `_add_authentication_arguments()`, `_add_backend_arguments()`, etc).
+- **Don't over-abstract.** No factories/interfaces/enums/wrapper classes
+  without a concrete, current need. Simple code beats clever code.
+- **Strategy/backend selection:** pick via one config field (e.g.
+  `backend.name`), validate once at the config boundary, give each
+  strategy parallel-named builder/runner functions
+  (`_build_x_command()`/`_run_x()`). A validated string is usually
+  enough — no enum/ABC needed unless complexity genuinely warrants it.
 
-> **Do not split functions merely to make them smaller.**
+## 6–7. Commands & Process Execution
 
-A helper should represent a meaningful responsibility, not just a few lines of code.
+- Build external commands/payloads in named stages
+  (`_build_base_command` → `_add_authentication_arguments` → ...) rather
+  than one large function.
+- Separate command construction from process lifecycle
+  (`_build_command` → `_start_process` → `_process_output` →
+  `_wait_for_process`). Isolate fatal-error detection (`_is_fatal_error()`).
 
-## 1.3 Clear and Descriptive Responsibilities
+### Idempotency & Resume Safety (long-running operations)
 
-Function names must describe **what the function does**, not how the implementation happens to work.
+- Distinguish **fully succeeded / fully failed / partial-resumable**
+  outcomes explicitly.
+- Don't auto-delete partial/resumable results unless requested.
+- Take "existing state" snapshots **before** the operation starts, and
+  re-compare after — including when it stops midway.
+- Retry logic must be explicit and **bounded**. Distinguish retryable
+  errors (timeouts, rate limits) from fatal ones (bad input, auth failure).
 
-Prefer:
+## 8. Error Handling
 
-```python
-_build_request_payload()
-_prepare_output_directories()
-_snapshot_existing_state()
-_analyze_results()
-```
+- Catch exceptions where there's enough context to handle them
+  meaningfully — don't wrap every line in `try/except`.
+- Avoid bare `except: pass` unless deliberate and genuinely harmless;
+  prefer specific exceptions.
+- Preserve error context in logs (`log(..., "ERROR")`).
+- Don't disguise unexpected exceptions as success.
 
-over vague names such as:
+## 9. Logging & Output
 
-```python
-_process()
-_handle()
-_do_task()
-_helper()
-```
+- Use the project's `log()` abstraction consistently; don't duplicate
+  the format inline.
+- Keep user-facing progress/summaries separate from diagnostic/raw output.
+- Debug output goes through a `debug_raw_output`-style flag, not scattered ad hoc flags.
+- Levels: `DEBUG` (raw detail, debug-only) · `INFO` (normal progress) ·
+  `WARNING` (recovered abnormal condition) · `ERROR` (one operation
+  failed, others continue) · `CRITICAL` (halts everything).
+- All log/console text is English (see §10 below).
 
-A developer should be able to understand the function's purpose from its name without opening the implementation.
+## 10. Language Consistency
 
----
+- **All code, comments, docstrings, log/console messages, commit
+  messages, and docs must be English** — even in files that currently
+  mix English and another language.
+- When a file is touched for any reason, bring its language in line as
+  part of that same change (don't defer it) — but don't open otherwise-
+  untouched files *just* to translate them; batch pure-translation work
+  into its own focused change unless a project-wide pass was requested.
+- Translation must be text-only (no behavior change); if literal
+  translation would lose meaning, rewrite clearly and flag it.
+- **Exceptions:** text that must match an external API/tool verbatim
+  stays as-is (add an English comment nearby); deliberately localized
+  user-facing copy (e.g. a bot's replies for a non-English audience) is
+  a product decision — confirm with the user before changing it, even
+  though surrounding code/comments/logs still follow English-only.
 
-# 2. Function Naming
+## 11. Data, Files, Types, Comments — quick rules
 
-## 2.1 Public Functions
+- Return meaningful values (success/failure, structured data) instead of
+  relying on hidden side effects; use dicts/dataclasses for multi-value results.
+- Don't mutate passed-in data unless mutation is the function's explicit
+  job (builder-style `items.extend(...); return items` is fine).
+- Give directory setup and "snapshot before operation" their own
+  responsibility; don't casually reorder filesystem/state operations
+  during a refactor.
+- Type-hint public functions, config classes, and non-obvious helpers —
+  don't over-engineer typing for its own sake.
+- Comments explain **why**, not what the code already shows; keep them
+  accurate when behavior changes; docstrings only where behavior isn't obvious.
 
-Public functions are the main functions intended to be called from outside the module.
+## 12. Style, Imports, Dependencies
 
-They should **not** start with `_`.
+- Follow standard language conventions (PEP 8 for Python) unless the
+  project already deviates deliberately.
+- Import order: stdlib → third-party → local. No unused imports.
+- Centralize dependency installation (e.g. `_install_dependencies()`);
+  don't install packages inside unrelated functions; only install what
+  the enabled feature/backend actually needs.
 
-Example:
+## 13. Security & External Boundaries
 
-```python
-run_task()
-```
+- Never hard-code secrets (tokens, cookies, passwords, keys).
+- Prefer argument-list subprocess calls over shell strings; avoid
+  `shell=True` unless truly required.
+- Don't blindly trust external URLs/filenames/tool output — validate
+  where it matters.
+- Treat third-party CLIs/APIs/binaries as boundaries that can fail,
+  return unexpected output, or become unavailable — handle failure
+  modes without excessive defensiveness.
 
-## 2.2 Private/Internal Functions
+## 14. Testing & Verification
 
-Functions that exist only to support other functions should start with `_`.
+- Prefer focused tests for input validation, command/payload
+  construction, config conversion, and output parsing when practical.
+- Minimum verification for any refactor: syntax check → import check →
+  call-site/reference check → targeted function checks → real execution
+  when possible.
 
-Example:
+## 15. Refactoring Workflow
 
-```python
-_build_command()
-_add_authentication_arguments()
-_process_output()
-```
+1. **Understand** — current behavior, inputs/outputs, global deps, side
+   effects, execution order.
+2. **Preserve** — record what must not change.
+3. **Design** — decide responsibility splits, renames, groupings.
+4. **Refactor** — small, focused changes.
+5. **Verify** — per §14, plus compare against prior behavior.
+6. **Review** — check for accidental behavior changes, unneeded
+   abstraction, dead code, unclear names, hidden deps.
 
-This convention makes the public API immediately visible.
+Keep changes **incremental**: don't mix architecture refactoring,
+feature additions, and behavior changes in one step. A project-wide
+translation pass is its own separate change unless small enough to
+review alongside the refactor it's part of.
 
-### Rule
+## 16. Git Hygiene
 
-Use:
+- Coherent commits (`refactor: ...`, `fix: ...`, `docs: ...`), in English.
+- Don't commit secrets, build artifacts, caches, or editor temp files.
 
-```python
-public_function()
-_private_helper()
-```
+## 17. Guiding Principles (condensed)
 
-Not:
+- Explicit beats clever; minimize complexity that doesn't aid
+  understanding; keep interfaces small; make dependencies visible via
+  parameters/config, not hidden coupling; a function should be
+  understandable mostly by reading it and its direct collaborators;
+  existing user-facing behavior is a compatibility contract — don't
+  break it incidentally; keep changes reviewable.
+- When designs are ambiguous, prioritize in order: **correctness →
+  preserving behavior → clarity → maintainability → simple architecture
+  → testability → performance → additional abstraction.**
 
-```python
-_private_main_function()
-helper_function()
-```
+## 18. Refactoring Checklist
 
-when the helper is intended to be internal.
+- [ ] Existing behavior preserved
+- [ ] Public/private naming correct (`_` prefix for internal helpers)
+- [ ] Functions follow Single Responsibility
+- [ ] Related config grouped into dataclasses where it helps
+- [ ] Operation inputs kept separate from reusable config
+- [ ] Hidden global dependencies removed where practical
+- [ ] Command/payload construction separated from execution
+- [ ] Error handling explicit and meaningful
+- [ ] Logging levels used consistently
+- [ ] Unused code/imports removed; no unnecessary abstraction added
+- [ ] No hard-coded secrets
+- [ ] Syntax, imports, and call sites checked; real execution tested if possible
+- [ ] Persistent-runtime state assumptions checked, if applicable
+- [ ] Partial/failed long-running operations handled explicitly, if applicable
+- [ ] Touched code/comments/logs/docs are in English
 
-## 2.3 Avoid Generic Function Names
+## 19. AI Refactoring Communication Protocol
 
-Avoid names such as:
+- Limit each change to one responsibility/section at a time.
+- **Ask first** before: removing code that looks unused but might be
+  public API, reordering filesystem/state operations, changing a
+  default/output format, or adding a new dependency.
+- **No need to ask** before: renaming a clearly-local internal helper,
+  splitting a function that clearly violates SRP (behavior unchanged),
+  or translating non-English comments/logs in a file already being
+  touched for another reason.
+- End every refactoring session with a summary: files/functions
+  changed, any intentional behavior change and why, anything
+  intentionally left out of scope.
 
-```python
-process()
-handle()
-run()
-execute()
-do_work()
-helper()
-manager()
-utils()
-```
+## Golden Rule
 
-unless the scope and responsibility are genuinely obvious.
-
-Prefer names that describe the operation:
-
-```python
-_run_task_process()
-_handle_progress_line()
-_log_output_line()
-_build_command()
-```
-
-## 2.4 Boolean Names
-
-Boolean variables should read naturally as conditions.
-
-Prefer:
-
-```python
-use_cache
-use_suffix
-use_custom_headers
-use_retry
-```
-
-over ambiguous names such as:
-
-```python
-cache
-suffix
-headers
-retry
-```
-
-when the value represents an on/off choice.
-
----
-
-# 3. Configuration Design
-
-## 3.1 Avoid Long Parameter Lists
-
-Functions should not receive a large number of closely related parameters.
-
-Avoid:
-
-```python
-run_task(
-    input_value,
-    output_dir,
-    backend,
-    timeout,
-    max_connections,
-    split_count,
-    min_split_size,
-    allocation_mode,
-    credentials_file,
-    ...
-)
-```
-
-Group related configuration into configuration objects.
-
-Example:
-
-```python
-run_task(task_input, output_name, config)
-```
-
-## 3.2 Use Dataclasses for Structured Configuration
-
-When several values belong to the same conceptual area, use a dataclass.
-
-Example structure:
+> Refactor to make the code easier to understand, not merely different.
 
 ```text
-AppConfig
-├── io_options
-├── output_dir
-├── backend
-├── retry
-├── authentication
-├── request
-└── debug_raw_output
+Simple + Clear + Explicit + Maintainable + Behavior-compatible + English
 ```
-
-Example:
-
-```python
-@dataclass
-class AppConfig:
-    io_options: IOOptions
-    output_dir: str
-    backend: BackendConfig
-    retry: RetryConfig
-    authentication: AuthenticationConfig
-    request: RequestConfig
-    debug_raw_output: bool = False
-```
-
-## 3.3 Keep Operation Inputs Separate From Configuration
-
-Values that represent the **operation being performed** should remain separate from general configuration.
-
-For example:
-
-```python
-run_task(task_input, output_name, config)
-```
-
-Here:
-
-- `task_input` = operation input
-- `output_name` = operation input
-- `config` = reusable configuration
-
-Do not put every argument into one giant configuration object merely to reduce the parameter count.
-
-## 3.4 Group by Responsibility
-
-Configuration objects should represent meaningful domains.
-
-Example structure:
-
-```python
-IOOptions
-BackendConfig
-RetryConfig
-AuthenticationConfig
-RequestConfig
-AppConfig
-```
-
-Do not create a new configuration class for every one or two variables.
-
-Avoid over-engineering.
-
-## 3.5 Derived Values
-
-If a value can be reliably derived from another configuration value, prefer deriving it at a clear boundary instead of storing duplicate state.
-
-Example:
-
-```python
-normalized_path = raw_path.rstrip("/") if use_trailing_slash_removal else raw_path
-```
-
-The conversion from external/UI inputs into application configuration should happen in one place:
-
-```python
-_create_app_config()
-```
-
-This function acts as the boundary between UI/input variables and the internal application model.
-
-## 3.6 Configuration Mutability
-
-Do not use immutable/frozen configuration objects unless there is a concrete need.
-
-For simple, single-process/interactive workflows, normal mutable dataclasses are preferred. Reach for immutability only when concurrency or shared state genuinely requires it.
-
----
-
-# 4. Global Variables and State
-
-## 4.1 Avoid Hidden Global Dependencies
-
-Functions should not silently depend on global variables when the value logically belongs to their inputs.
-
-Bad:
-
-```python
-def handle_progress_line(line):
-    label = truncate_label(display_name)
-```
-
-Better:
-
-```python
-def _handle_progress_line(line, display_label):
-    ...
-```
-
-The function's dependencies should be visible from its parameters.
-
-## 4.2 Configuration Globals Should Have One Conversion Boundary
-
-External inputs (CLI flags, environment variables, notebook form fields, config files) may remain as raw inputs, but application logic should not spread direct dependencies on those globals throughout the code.
-
-Prefer:
-
-```text
-External inputs
-    ↓
-_create_app_config()
-    ↓
-AppConfig
-    ↓
-application logic
-```
-
-This makes future migration to another UI, CLI, or API easier.
-
-## 4.3 Avoid Hidden Side Effects
-
-A function should not unexpectedly modify unrelated global state.
-
-Side effects should be obvious from the function's responsibility.
-
-## 4.4 Persistent Runtime State Safety
-
-Some environments keep running the same process or session across multiple
-invocations — notebooks (Jupyter/Colab), long-lived servers, REPLs, background
-workers. In these environments, global state can silently leak between runs,
-which is a different risk profile than a fresh CLI invocation.
-
-### Rules
-
-- **Never assume clean state.** Every time the main entry point runs (whether
-  triggered by a fresh process or a re-run within the same session), all
-  configuration must be rebuilt from scratch.
-- `_create_app_config()` (or its equivalent) **must always construct a new
-  configuration object**, never mutate a previous instance in place.
-- Do not store operation state (progress, collected results, etc.) in
-  module-level globals that persist across runs. Keep it in function scope or
-  in the object returned by the function.
-- Dependency installation/setup routines must be idempotent — check whether a
-  dependency is already available before installing it again, since setup
-  code in these environments can run multiple times within the same session.
-- If the code interacts with external resources that may already be
-  initialized (mounted storage, open connections, cached clients), check
-  their state before assuming they need to be (re)initialized.
-
----
-
-# 5. Architecture
-
-## 5.1 Prefer Clear Layers
-
-The project should naturally separate into responsibilities such as:
-
-```text
-Input / Configuration
-        ↓
-Preparation
-        ↓
-Command / Payload Construction
-        ↓
-Execution
-        ↓
-Output Processing
-        ↓
-Analysis
-        ↓
-Summary / Presentation
-```
-
-Do not mix unrelated layers unless there is a practical reason.
-
-## 5.2 Main Functions Should Orchestrate
-
-A high-level public function should primarily coordinate the workflow.
-
-Example:
-
-```python
-run_task(task_input, output_name, config)
-```
-
-Conceptually:
-
-```text
-prepare
-  ↓
-build
-  ↓
-run
-  ↓
-analyze
-  ↓
-summarize
-```
-
-The orchestration function should not contain the detailed implementation of every step.
-
-## 5.3 Helpers Should Have Clear Boundaries
-
-For example:
-
-```text
-_build_command()
-    ├── _build_base_command()
-    ├── _add_authentication_arguments()
-    ├── _add_credential_provider_arguments()
-    ├── _add_client_identity_arguments()
-    ├── _add_header_arguments()
-    └── _add_backend_arguments()
-```
-
-Each helper handles one logical concern.
-
-## 5.4 Do Not Over-Abstract
-
-Abstraction is useful when it:
-
-- removes duplication,
-- isolates a responsibility,
-- makes code easier to understand,
-- makes testing easier,
-- or provides a stable boundary.
-
-Do not create abstractions simply because they are theoretically possible.
-
-Avoid unnecessary:
-
-- factories,
-- interfaces,
-- base classes,
-- enums,
-- dependency injection frameworks,
-- generic managers,
-- wrapper classes,
-- one-line helper functions.
-
-> **Simple code is preferred over clever code.**
-
-## 5.5 Strategy/Backend Selection Consistency
-
-Some projects support more than one implementation of the same responsibility
-(e.g. multiple storage backends, multiple HTTP clients, multiple rendering
-engines). When that applies, keep the selection mechanism consistent and easy
-to extend.
-
-### Rules
-
-- Select the strategy/backend through **one string (or otherwise simple)
-  field** in the configuration (e.g. `backend.name`), not through many
-  separate boolean flags.
-- Validate the selected value **once**, at the configuration entry point
-  (`_create_app_config()`), not scattered across multiple functions.
-- Give each strategy/backend its own builder and runner functions with
-  parallel naming:
-
-```python
-_build_backend_a_command() / _run_backend_a()
-_build_backend_b_command() / _run_backend_b()
-```
-
-- The orchestrator (the public entry function) should only dispatch to the
-  right implementation based on the configured value — it should not contain
-  logic specific to any single strategy/backend.
-- **An Enum or abstract base class is usually not necessary** for this — a
-  validated string literal (`if backend not in ("a", "b")`) is often enough.
-  This stays consistent with "avoid over-abstraction" in section 5.4. Reach
-  for a stronger abstraction only once there are enough strategies, or
-  enough shared structure between them, that a plain conditional becomes
-  hard to follow.
-
----
-
-# 6. Command / Payload Construction
-
-When constructing external commands, requests, or structured payloads, build
-them in understandable stages.
-
-Prefer:
-
-```python
-payload = _build_base_command(...)
-payload = _add_authentication_arguments(payload, ...)
-payload = _add_credential_provider_arguments(payload, ...)
-payload = _add_client_identity_arguments(payload, ...)
-payload = _add_header_arguments(payload, ...)
-payload = _add_backend_arguments(payload, ...)
-```
-
-over one large function containing all construction logic.
-
-Each argument/field group should have an identifiable owner.
-
----
-
-# 7. Process / Task Execution
-
-External process or long-running task handling should be separated from
-construction logic.
-
-For example:
-
-```text
-_build_command()
-        ↓
-_start_process()
-        ↓
-_process_output()
-        ↓
-_wait_for_process()
-```
-
-The process runner should be responsible for process lifecycle and execution status.
-
-Output parsing/formatting should not be unnecessarily mixed into process startup logic.
-
-Fatal-error detection should be isolated where practical:
-
-```python
-_is_fatal_error()
-```
-
-## 7.1 Idempotency & Resume Safety for Long-Running Operations
-
-Whenever an operation can fail partway through (network interruption, process
-crash, runtime disconnect, timeout), that possibility must be handled
-explicitly rather than ignored — this applies to downloads, batch jobs,
-migrations, uploads, or any multi-step external operation.
-
-### Rules
-
-- The outcome of a long-running operation should be distinguishable into at
-  least three categories: **fully succeeded**, **fully failed**, and
-  **partial / resumable**.
-- If the underlying mechanism supports resuming, do not automatically delete
-  partial results unless explicitly requested.
-- Any "snapshot of existing state" taken for comparison purposes (see section
-  11.2) must be taken **before** the operation starts, and compared again
-  after it finishes — including the case where the operation stops midway.
-- Retry logic, if present, must be explicit and bounded (a maximum number of
-  attempts), never unbounded.
-- Distinguish errors that are **worth retrying** (network timeouts, rate
-  limits) from errors that are **fatal and not worth retrying** (invalid
-  input, authentication failure) — consistent with `_is_fatal_error()` above.
-
----
-
-# 8. Error Handling
-
-## 8.1 Handle Errors at the Appropriate Level
-
-Do not wrap every line of code in:
-
-```python
-try:
-    ...
-except Exception:
-    ...
-```
-
-Catch exceptions where there is enough context to handle them meaningfully.
-
-## 8.2 Do Not Silently Ignore Errors
-
-Avoid:
-
-```python
-except:
-    pass
-```
-
-unless there is a deliberate reason and the ignored failure is genuinely harmless.
-
-Prefer:
-
-```python
-except ValueError:
-    ...
-```
-
-or another specific exception when possible.
-
-## 8.3 Preserve Useful Error Information
-
-Errors from external tools or services should retain enough context to diagnose failures.
-
-Use the project's logging mechanism consistently:
-
-```python
-log("...", "ERROR")
-log("...", "CRITICAL")
-```
-
-## 8.4 Distinguish Expected Failures From Unexpected Failures
-
-Expected conditions should be handled explicitly.
-
-Unexpected exceptions should not be disguised as successful execution.
-
----
-
-# 9. Logging and Output
-
-## 9.1 Use the Existing Logging Abstraction
-
-Use:
-
-```python
-log(message)
-```
-
-for application-level log messages.
-
-Do not duplicate the logging format throughout the code.
-
-## 9.2 Keep User-Facing Output Separate From Diagnostic Logging
-
-Progress displays and summaries are presentation concerns.
-
-Raw subprocess or raw response output is diagnostic information.
-
-For example:
-
-```python
-_log_raw_output()
-_handle_progress_line()
-_print_summary()
-```
-
-should have distinct responsibilities.
-
-## 9.3 Debug Mode
-
-Debug behavior should be controlled by configuration:
-
-```python
-debug_raw_output
-```
-
-Do not scatter independent debug flags throughout the code.
-
-## 9.4 Logging Levels
-
-Define logging levels explicitly so they are used consistently:
-
-| Level      | When to use                                                          |
-|------------|-----------------------------------------------------------------------|
-| `DEBUG`    | Technical detail (raw commands, raw output) — only shown when `debug_raw_output=True` |
-| `INFO`     | Normal progress relevant to the user (operation started, completed)   |
-| `WARNING`  | Abnormal condition but the process still continues (retry, fallback)  |
-| `ERROR`    | An operation failed but other work can still continue                 |
-| `CRITICAL` | A failure that halts the overall process                              |
-
-Avoid using `print()` directly outside `log()` for messages that carry one of
-these levels — consistent with section 9.1.
-
-## 9.5 Language
-
-All log and console output text must be written in English. See section 31
-("Language Consistency") for the full rule and its scope.
-
----
-
-# 10. Data and Return Values
-
-## 10.1 Return Meaningful Values
-
-Functions should return useful information instead of relying on side effects.
-
-For example:
-
-```python
-return True
-```
-
-for success/failure is preferable to requiring callers to inspect hidden state.
-
-## 10.2 Use Structured Data When Appropriate
-
-When a function produces multiple related values, prefer a dictionary or dataclass over many separate return values.
-
-Example:
-
-```python
-summary = {
-    "total_items": ...,
-    "new_items": ...,
-    "total_size_bytes": ...,
-}
-```
-
-If the structure becomes stable and complex enough, consider a dataclass.
-
-## 10.3 Do Not Mutate Data Unexpectedly
-
-If a helper receives a list/configuration object, avoid modifying it unless mutation is part of its explicit responsibility.
-
-For builder-style functions, mutation is acceptable when it is part of the established builder pattern:
-
-```python
-items.extend(...)
-return items
-```
-
-Keep that convention consistent.
-
----
-
-# 11. File and Directory Handling
-
-## 11.1 Make Directory Responsibilities Explicit
-
-Directory creation should have its own responsibility when practical:
-
-```python
-_prepare_output_directories()
-```
-
-## 11.2 Preserve Existing State Detection Semantics
-
-If the application needs to distinguish newly created/changed items from
-pre-existing ones, take the snapshot at the appropriate point before the
-operation changes the relevant state.
-
-Do not casually change the order of filesystem or state operations during refactoring.
-
----
-
-# 12. Naming Conventions
-
-Use descriptive names consistently. All names, in every language context
-described here, must be in English — see section 31.
-
-### Variables
-
-Prefer:
-
-```python
-filename_template
-output_dir
-temp_dir
-original_items
-new_items
-display_label
-```
-
-over:
-
-```python
-x
-data
-tmp
-result
-obj
-item
-```
-
-unless the shorter name is genuinely obvious from a small local scope.
-
-### Constants
-
-Constants should use uppercase:
-
-```python
-DEBUG_RAW_OUTPUT
-```
-
-### Classes
-
-Use `PascalCase`:
-
-```python
-AppConfig
-IOOptions
-BackendConfig
-```
-
-### Functions and variables
-
-Use `snake_case`:
-
-```python
-run_task
-_build_command
-filename_template
-```
-
----
-
-# 13. Type Hints
-
-Use type hints for:
-
-- public functions,
-- configuration classes,
-- important helpers,
-- non-obvious return values.
-
-Examples:
-
-```python
-def run_task(
-    task_input: str,
-    output_name: str,
-    config: AppConfig,
-) -> bool:
-    ...
-```
-
-```python
-def _get_item_metadata(file_path: str) -> dict:
-    ...
-```
-
-Do not add complicated typing solely for the sake of having more types.
-
-Prefer readable types over overly elaborate generic type expressions.
-
----
-
-# 14. Documentation and Comments
-
-## 14.1 Comments Explain Why
-
-Prefer comments that explain **why** something exists.
-
-Good:
-
-```python
-# Keep temporary fragments separate from the final output directory.
-```
-
-Less useful:
-
-```python
-# Create temp directory.
-os.makedirs(temp_dir)
-```
-
-The code already explains what it does.
-
-## 14.2 Keep Comments Accurate
-
-Outdated comments are worse than no comments.
-
-Whenever behavior changes, update affected comments/docstrings.
-
-## 14.3 Docstrings for Non-Obvious Functions
-
-Use concise docstrings when a function's behavior, side effects, or constraints are not obvious.
-
-Do not write documentation that merely repeats the function name.
-
-## 14.4 Language
-
-All comments and docstrings are written in English, regardless of the
-language used elsewhere in the project's history. See section 31.
-
----
-
-# 15. Formatting and Style
-
-Follow standard language conventions (e.g. PEP 8 for Python) unless a
-project-specific convention has been deliberately established.
-
-Prefer:
-
-- readable line lengths,
-- consistent indentation,
-- consistent spacing,
-- imports grouped logically,
-- no unnecessary blank-line noise,
-- no trailing debugging code.
-
-Use automated formatters/linters when practical, but do not let tooling make the code less readable.
-
----
-
-# 16. Imports
-
-Keep imports:
-
-1. standard library,
-2. third-party libraries,
-3. project-local modules.
-
-Avoid unused imports.
-
-If an import is only required after installing an optional dependency, handle that dependency intentionally rather than relying on accidental import order.
-
----
-
-# 17. Dependency Management
-
-Dependency installation should be explicit and centralized.
-
-For example:
-
-```python
-_install_dependencies(config)
-```
-
-should own dependency setup.
-
-Do not install packages unexpectedly inside unrelated functions.
-
-Optional dependencies should only be installed when the relevant feature requires them.
-
-Example:
-
-```text
-Optional feature X enabled
-    → install the dependency that feature requires
-```
-
-```text
-Backend Y selected
-    → ensure the external tool/library Y needs is available
-```
-
----
-
-# 18. Refactoring Workflow
-
-Every refactor should follow this order:
-
-### Step 1 — Understand
-
-Before changing code:
-
-- identify current behavior,
-- identify inputs and outputs,
-- identify global dependencies,
-- identify side effects,
-- identify function responsibilities,
-- identify important execution order.
-
-### Step 2 — Preserve
-
-Record behavior that must remain unchanged.
-
-### Step 3 — Design
-
-Decide:
-
-- which responsibilities should be separated,
-- which functions should be renamed,
-- which values should be grouped,
-- which helpers are actually necessary.
-
-### Step 4 — Refactor
-
-Make focused structural changes.
-
-### Step 5 — Verify
-
-At minimum:
-
-- check syntax,
-- check imports,
-- inspect function call sites,
-- check global-variable dependencies,
-- check parameter names,
-- check return values,
-- check execution order,
-- compare important behavior with the previous version.
-
-### Step 6 — Review
-
-Look specifically for:
-
-- accidental behavior changes,
-- unnecessary abstractions,
-- duplicated logic,
-- unclear names,
-- hidden dependencies,
-- dead code,
-- unused imports,
-- overly large functions.
-
----
-
-# 19. Incremental Changes
-
-Prefer small, understandable refactoring steps.
-
-Do not combine unrelated changes such as:
-
-- architecture refactoring,
-- feature additions,
-- UI redesign,
-- dependency upgrades,
-- behavior changes,
-- performance optimization,
-
-unless there is a clear reason.
-
-A refactor should be easy to review and, if necessary, easy to revert.
-
-This also applies to language translation work (section 31): a
-project-wide, translation-only pass is its own change, separate from a
-structural refactor, unless the two are small enough together to stay
-easy to review.
-
----
-
-# 20. Avoid Premature Optimization
-
-Do not optimize code without evidence that optimization is needed.
-
-Correctness and maintainability come first.
-
-When performance matters:
-
-1. identify the bottleneck,
-2. measure it,
-3. optimize the relevant part,
-4. verify that behavior remains correct.
-
-Do not sacrifice readability for negligible performance gains.
-
----
-
-# 21. Avoid Dead Code
-
-Remove:
-
-- unused imports,
-- unused variables,
-- unused functions,
-- obsolete comments,
-- abandoned implementations,
-- debugging statements.
-
-However, do not remove apparently unused code if it may be part of an external/public API without first checking its usage.
-
----
-
-# 22. Compatibility and Stability
-
-When refactoring an existing stable version:
-
-> **The stable version is the behavioral reference.**
-
-Internal implementation may change, but important observable behavior should remain compatible unless explicitly approved.
-
-When there is uncertainty, prefer:
-
-```text
-preserve existing behavior
-```
-
-over:
-
-```text
-make a speculative improvement
-```
-
-Discuss potentially breaking improvements before implementing them.
-
----
-
-# 23. Security and Reliability
-
-Even for a personal project, follow basic security practices.
-
-### Never hard-code secrets
-
-Do not commit:
-
-- cookies,
-- session strings,
-- API tokens,
-- passwords,
-- private keys,
-- personal access tokens.
-
-### Avoid unsafe shell construction
-
-Prefer argument lists:
-
-```python
-subprocess.run(["command", "--option", value])
-```
-
-over constructing shell commands as a single string whenever possible.
-
-Avoid `shell=True` unless it is genuinely required.
-
-### Validate external input
-
-URLs, filenames, paths, and external tool/service output should not be blindly trusted.
-
----
-
-# 24. External Tool and Service Boundaries
-
-Treat external dependencies such as:
-
-- third-party CLIs,
-- package managers,
-- external APIs and network services,
-- system binaries,
-
-as external boundaries.
-
-Do not assume they always:
-
-- exist,
-- return valid output,
-- return the same output format,
-- complete successfully,
-- or remain compatible forever.
-
-Handle their failure modes where appropriate without making the code excessively defensive.
-
----
-
-# 25. Testing and Verification
-
-Tests are preferred whenever practical.
-
-For functions that are easy to test independently, especially:
-
-- input sanitization/validation,
-- command or payload construction,
-- configuration conversion,
-- output/progress parsing,
-- error detection,
-
-consider adding focused tests.
-
-If a full test suite is not practical, perform targeted verification.
-
-At minimum for a refactor:
-
-```text
-Syntax check
-    ↓
-Import check
-    ↓
-Static/reference inspection
-    ↓
-Targeted function checks
-    ↓
-Real execution when possible
-```
-
----
-
-# 26. Git and Change Hygiene
-
-Use Git commits that represent coherent changes.
-
-Prefer commits such as:
-
-```text
-refactor: separate command builder responsibilities
-refactor: group backend configuration
-fix: preserve existing state-snapshot behavior
-docs: update project instructions
-```
-
-Avoid large commits containing unrelated changes.
-
-Commit messages are written in English (see section 31), regardless of
-what language earlier commits in the project's history used.
-
-Do not commit:
-
-- generated temporary files,
-- build artifacts or large binary outputs,
-- credentials,
-- caches,
-- local environment files,
-- editor-specific temporary files,
-
-unless explicitly required by the project.
-
----
-
-# 27. Linux/Kernel-Inspired Principles That Apply Here
-
-Most personal or small-team projects do **not** need Linux-kernel-level
-complexity or process.
-
-Only adopt the principles that are useful at the project's actual scale.
-
-### 27.1 Explicit Is Better Than Clever
-
-Code should be understandable during maintenance.
-
-Avoid clever tricks when straightforward code communicates the intent better.
-
-### 27.2 Minimize Unnecessary Complexity
-
-Every abstraction has a maintenance cost.
-
-Before introducing one, ask:
-
-> "Does this make the code easier to understand or maintain?"
-
-If not, do not add it.
-
-### 27.3 Keep Interfaces Small
-
-Functions should receive only what they reasonably need.
-
-Configuration grouping is encouraged, but do not create giant "everything" objects.
-
-### 27.4 Make Dependencies Visible
-
-A function should make important dependencies clear through:
-
-- parameters,
-- configuration objects,
-- return values.
-
-Avoid hidden coupling.
-
-### 27.5 Prefer Local Reasoning
-
-A developer should be able to understand a function mostly by reading that function and its immediate collaborators.
-
-Avoid requiring a developer to trace many unrelated globals or modules just to understand a small operation.
-
-### 27.6 Don't Break Userspace
-
-Adapted to any project:
-
-> Existing user-facing behavior is a compatibility contract.
-
-Internal improvements should not unexpectedly break the way the software is used.
-
-### 27.7 Reviewability Matters
-
-Code should be written so another developer can understand why a change was made.
-
-A smaller, focused change is preferable to a massive rewrite when both achieve the same goal.
-
----
-
-# 28. Decision Rules for Ambiguous Refactors
-
-When multiple designs are possible, prioritize in this order:
-
-1. **Correctness**
-2. **Preserving existing behavior**
-3. **Clarity**
-4. **Maintainability**
-5. **Simple architecture**
-6. **Testability**
-7. **Performance**
-8. **Additional abstraction**
-
-Do not choose a more sophisticated architecture merely because it looks more "professional."
-
-Professional code is not code with the most abstractions.
-
-Professional code is code whose structure matches the problem.
-
----
-
-# 29. Refactoring Checklist
-
-Before considering a refactor complete, verify:
-
-- [ ] Existing behavior is preserved.
-- [ ] Public functions are clearly identifiable.
-- [ ] Private helpers use a leading `_`.
-- [ ] Function names describe responsibilities clearly.
-- [ ] Functions follow Single Responsibility Principle.
-- [ ] Long parameter lists have been evaluated for grouping.
-- [ ] Related configuration is grouped into dataclasses where appropriate.
-- [ ] Operation inputs remain separate from configuration.
-- [ ] Hidden global dependencies have been removed where practical.
-- [ ] Derived values are created at a clear boundary.
-- [ ] Command/payload construction is separated from execution.
-- [ ] Error handling is explicit and meaningful.
-- [ ] Logging responsibilities are clear.
-- [ ] Unused code/imports have been removed.
-- [ ] Comments explain intent rather than obvious syntax.
-- [ ] Type hints are present where useful.
-- [ ] No unnecessary abstraction has been introduced.
-- [ ] No secrets or credentials are hard-coded.
-- [ ] External process/service calls are handled safely.
-- [ ] Syntax has been checked.
-- [ ] Important call sites have been reviewed.
-- [ ] Real execution has been tested when practical.
-- [ ] The final diff is focused and reviewable.
-- [ ] Persistent-runtime state assumptions have been checked, if applicable (section 4.4).
-- [ ] Strategy/backend selection logic stays in one place, if applicable (section 5.5).
-- [ ] Partial/failed long-running operations are handled explicitly, if applicable (section 7.1).
-- [ ] Any code, comments, logs, or docs touched in this change are in English (section 31).
-
----
-
-# 30. AI Refactoring Communication Protocol
-
-Since refactoring is often done with the help of an AI assistant, add explicit
-communication rules so the results can be reviewed easily.
-
-### Rules
-
-- **Limit the size of each change.** One refactoring step should touch one
-  responsibility/section of this document at a time (e.g. only separate the
-  command builder, without also changing error handling in the same step).
-- **Ask before:**
-  - removing a function/piece of code that looks unused but might be part of
-    a public API,
-  - changing the order of filesystem or state operations (snapshot, execute,
-    cleanup),
-  - changing a default value or output format,
-  - adding a new dependency.
-- **No need to ask before:**
-  - renaming an internal helper that is clearly only used locally,
-  - splitting a large function that clearly violates the Single
-    Responsibility Principle (section 1.2), as long as behavior is
-    unchanged,
-  - translating existing non-English comments/logs/docs in a file already
-    being touched for another reason into English (section 31) — as long
-    as the translation does not change behavior or meaning.
-- **Every refactoring session should end with a summary:**
-  - the list of files/functions changed,
-  - any behavior that was intentionally changed, and why,
-  - anything intentionally left untouched because it was out of scope for
-    that step.
-
----
-
-# 31. Language Consistency
-
-## 31.1 English Only
-
-All code, comments, docstrings, log/console messages, commit messages,
-and documentation in this project must be written in **English**, even
-where existing files mix English and other languages (e.g. Indonesian).
-
-This applies to:
-
-- variable, function, and class names (already covered by the naming
-  rules in section 2 and section 12),
-- inline comments and docstrings (section 14.4),
-- log/print messages, including `log("...")` calls, exception messages,
-  and anything printed to console or notebook output (section 9.5),
-- error messages and other user-facing strings printed to
-  console/output,
-- markdown documentation (`README.md`, `ROADMAP.md`, `PROGRESS.md`,
-  `TESTING.md`, `docs/`, etc.),
-- commit messages (section 26),
-- PR and issue descriptions.
-
-## 31.2 Applying This During Refactoring
-
-When a file is touched during a refactor for any reason, also bring its
-language in line with this rule as part of that same change, instead of
-leaving it for a separate pass:
-
-- If a function or file being refactored has non-English log messages,
-  comments, or docstrings, translate them to English in the same
-  change.
-- Translation must be text-only — do not change behavior while
-  translating (see section 1.1, "Preserve Existing Behavior"). If a
-  literal translation would change meaning, lose information, or
-  become awkward, prefer a clear rewrite over a mechanical one, and
-  call out anything non-obvious in the change summary (section 30).
-- Do not open and edit files that are otherwise untouched by the
-  current change *only* to translate them. Batch pure-translation work
-  into its own dedicated, focused change (section 19, "Incremental
-  Changes") unless the user has explicitly asked for a project-wide
-  translation pass.
-
-## 31.3 Exceptions
-
-- Text that must match an external API, tool, or service exactly (for
-  example, reproducing an upstream error message verbatim) should not
-  be mistranslated or altered — keep it as-is, and add an English
-  comment nearby if clarification is useful.
-- User-facing product copy that is deliberately localized for a
-  specific audience (for example, a bot's reply text intentionally
-  written for Indonesian-speaking users) is a product decision, not a
-  code-quality issue. Confirm with the user before changing user-facing
-  copy of this kind, even though the surrounding code, comments, and
-  logs should still follow the English-only rule.
-
----
-
-# 32. Golden Rule
-
-> **Refactor to make the code easier to understand, not merely different.**
-
-If a refactor makes the architecture more complicated, introduces unnecessary abstractions, or makes a simple operation harder to follow, reconsider the refactor.
-
-The goal is:
-
-```text
-Simple
-    +
-Clear
-    +
-Explicit
-    +
-Maintainable
-    +
-Behavior-compatible
-    +
-Consistently in English
-```
-
-—not maximum abstraction.
