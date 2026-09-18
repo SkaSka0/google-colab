@@ -16,38 +16,76 @@ from datetime import datetime, timezone, timedelta
 import requests
 from google.colab import userdata
 
+#@markdown ## 🔽 Video Downloader — Panduan Penggunaan
+#@markdown Script ini mendownload video lewat **yt-dlp** atau **aria2c**, dengan opsi
+#@markdown auto-scrape judul video via Firecrawl API, dan mendukung mode batch
+#@markdown (banyak video sekaligus dari file JSON) maupun mode single (satu video).
 
-# ============================================================
-# ⚙️ CONFIGURATION — EDIT HERE
-# ============================================================
+#@markdown ---
+#@markdown ### ⚠️ Wajib disiapkan sebelum run
+#@markdown 1. **Colab Secret** `FIRECRAWL_API_KEY` — isi dengan API key Firecrawl kamu
+#@markdown    (Menu 🔑 di sidebar kiri Colab). Hanya dipakai kalau mode single tanpa
+#@markdown    title siap (lihat penjelasan `skip_scrape` di bawah).
+#@markdown 2. **`DOWNLOAD_URL_TEMPLATE`** dan **`SOURCE_URL_TEMPLATES`** di bagian
+#@markdown    konfigurasi bawah harus diisi manual dengan URL template, gunakan
+#@markdown    placeholder `{code}` — contoh: `"https://contoh.com/video/{code}"`.
 
-# -------------------- General --------------------
+#@markdown ---
+#@markdown ### ⚙️ Parameter Umum
+#@markdown - **`filename`**: di mode *batch*, ini adalah path file JSON antrian
+#@markdown   download. Di mode *single*, ini adalah kode/ID video yang mau didownload.
+#@markdown - **`batch_processing`**:
+#@markdown   - `True` → proses semua item di file JSON (`filename`) secara berurutan.
+#@markdown   - `False` → download satu video saja berdasarkan kode di `filename`,
+#@markdown     judulnya di-scrape otomatis lewat Firecrawl.
+#@markdown - **`output_dir`**: folder tujuan video hasil download.
+#@markdown - **`backend`**: `yt-dlp` (default, lebih stabil) atau `aria2c` (lebih
+#@markdown   cepat untuk koneksi besar, butuh binary aria2c ter-install — otomatis
+#@markdown   diinstall script kalau belum ada).
+#@markdown - **`download_timeout`**: batas waktu (detik) sebelum satu proses download
+#@markdown   dianggap gagal/timeout.
+#@markdown - **Parameter `aria2c_*`**: hanya berpengaruh kalau `backend` = `aria2c`
+#@markdown   (jumlah koneksi paralel, jumlah split, ukuran minimum split, dst).
+
+#@markdown ---
+#@markdown ### 📄 Format File JSON (mode batch)
+#@markdown File di path `filename` harus berupa **array/list** JSON, tiap item:
+#@markdown ```json
+#@markdown [
+#@markdown   {"nama_file": "KODE123", "title": "Judul Video 1", "downloaded": false},
+#@markdown   {"nama_file": "KODE456", "title": "Judul Video 2"}
+#@markdown ]
+#@markdown ```
+#@markdown - `nama_file` **wajib** — dipakai untuk membangun URL download.
+#@markdown - `title` **wajib** — dipakai sebagai nama file hasil download (tidak
+#@markdown   di-scrape ulang, jadi harus sudah diisi manual di JSON).
+#@markdown - `downloaded` **opsional** — kalau `true`, item ini akan **dilewati**
+#@markdown   (dianggap sudah selesai). Kalau tidak ada / `false`, item akan
+#@markdown   (di)download.
+
+#@markdown ---
+#@markdown ### 🔁 Perilaku Retry & Checkpoint
+#@markdown - Setiap **5 download sukses berturut-turut**, progres disimpan otomatis
+#@markdown   ke file JSON (checkpoint), plus checkpoint terakhir di akhir proses.
+#@markdown - Item yang **gagal** akan ditandai `downloaded: false` di JSON — kalau
+#@markdown   cell ini dijalankan ulang, item tersebut **akan dicoba download lagi**.
+#@markdown - Item yang **sudah sukses** (`downloaded: true`, dan sudah sempat
+#@markdown   ter-checkpoint) **tidak** akan didownload ulang.
+#@markdown - Ringkasan akhir batch menampilkan jumlah *serta daftar judul* yang
+#@markdown   di-skip dan yang gagal, untuk memudahkan pengecekan manual.
 
 filename = '/content/pending_subtitles.json'  #@param {type:"string"}
 batch_processing = True  #@param {type:"boolean"}
-
-
-# -------------------- Output ---------------------
-
+#@markdown ---
 output_dir = '/content/media_toolkit/downloads/video'  #@param {type:"string"}
-
-
-# -------------------- Downloader -----------------
-
 backend = 'yt-dlp'  #@param ["yt-dlp","aria2c"]
 download_timeout = 1800  #@param {type:"integer", min:60, max:3600}
-
-
-# -------------------- Aria2c ---------------------
-
+#@markdown ---
 aria2c_connections = 8  #@param {type:"integer", min:1, max:64}
 aria2c_split = 8  #@param {type:"integer", min:1, max:64}
 aria2c_segments = 8  #@param {type:"integer", min:1, max:64}
 aria2c_min_split_size = '2M'  #@param ["1M","2M","4M","8M","16M"] {type:"string"}
 aria2c_file_allocation = 'none'  #@param ["none","prealloc","falloc","trunc"] {type:"string"}
-
-
-# -------------------- Batch ----------------------
 
 BATCH_CHECKPOINT_SIZE = 5
 
@@ -55,16 +93,14 @@ BATCH_CHECKPOINT_SIZE = 5
 # -------------------- Download URL ---------------
 
 DOWNLOAD_URL_TEMPLATE = (
+    'https://play.podjav.tv/file/movie-podjav/{code}/720p/720p.m3u8'
 )
 
-
-# -------------------- Title Sources ---------------
-
 SOURCE_URL_TEMPLATES = [
+    'https://123av.com/en/v/{code}',
+    'https://missav.ws/dm2/en/{code}',
+    'https://podjav.tv/movies/{code}/',
 ]
-
-
-# -------------------- Firecrawl -------------------
 
 FIRECRAWL_API_URL = 'https://api.firecrawl.dev/v2/scrape'
 FIRECRAWL_API_KEY_NAME = 'FIRECRAWL_API_KEY'
@@ -755,11 +791,29 @@ def make_bar(
     )
 
 
+def build_file_progress_prefix(
+    file_index: int,
+    file_total: int,
+) -> str:
+    """Build the '[FILE ke n/n]' prefix shown before the filename in progress output.
+
+    Used the same way for a single download (file_index=1, file_total=1)
+    and for a batch download (file_index/file_total reflecting the item
+    currently being processed), so the progress line format is identical
+    in both modes.
+    """
+    return f'[FILE ke {file_index}/{file_total}]'
+
+
 def handle_progress_line(
     line: str,
     display_name: str,
+    file_index: int = 1,
+    file_total: int = 1,
 ) -> bool:
     """Handle yt-dlp / aria2c progress output."""
+    prefix = build_file_progress_prefix(file_index, file_total)
+
     if '[download]' in line and '%' in line:
         match = re.search(
             r'(\d+\.?\d*)%\s+of\s+~?\s*'
@@ -791,7 +845,7 @@ def handle_progress_line(
             )
 
             print(
-                f'\r{fname}: [{bar}]{percent}%  |  '
+                f'\r{prefix} {fname}: [{bar}]{percent}%  |  '
                 f'Size: {size}  |  Speed: {speed}  |  '
                 f'ETA: {eta}{frag_info}',
                 end='',
@@ -800,7 +854,7 @@ def handle_progress_line(
 
         else:
             print(
-                f'\r{line[:150]}',
+                f'\r{prefix} {line[:150]}',
                 end='',
                 flush=True,
             )
@@ -808,7 +862,7 @@ def handle_progress_line(
         return True
 
     if line.startswith('[#') and '%' in line:
-        print(f'{line[:150]}', flush=True)
+        print(f'{prefix} {line[:150]}', flush=True)
         return True
 
     return False
@@ -817,6 +871,8 @@ def handle_progress_line(
 def run_downloader(
     cmd: list[str],
     display_name: str,
+    file_index: int = 1,
+    file_total: int = 1,
 ) -> bool:
     """Run the downloader process and handle its output."""
     fatal_errors = [
@@ -855,6 +911,8 @@ def run_downloader(
             if handle_progress_line(
                 line,
                 display_name,
+                file_index,
+                file_total,
             ):
                 last_was_progress = True
                 continue
@@ -914,6 +972,8 @@ def download_video(
     download_url: str,
     filename: str,
     skip_scrape: bool = False,
+    file_index: int = 1,
+    file_total: int = 1,
 ) -> bool:
     """Download one video using the global configuration."""
     if skip_scrape:
@@ -974,13 +1034,15 @@ def download_video(
     cmd = inject_backend(cmd)
 
     log(
-        f'🎬 Starting download with '
+        f'🎬 [FILE ke {file_index}/{file_total}] Starting download with '
         f'{backend.upper()}'
     )
 
     success = run_downloader(
         cmd,
         target_name,
+        file_index,
+        file_total,
     )
 
     if success:
@@ -1094,6 +1156,8 @@ def process_batch(json_path: str) -> None:
             download_url=download_url,
             filename=title,
             skip_scrape=True,
+            file_index=index,
+            file_total=total,
         )
 
         if success:
@@ -1235,6 +1299,8 @@ def main() -> None:
             download_url=download_url,
             filename=filename,
             skip_scrape=False,
+            file_index=1,
+            file_total=1,
         )
 
         if success:
