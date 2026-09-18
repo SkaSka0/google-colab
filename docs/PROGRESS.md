@@ -23,8 +23,8 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done
 
 - [ ] `download_file_via_requests_or_aria2c.py` —
 - [ ] `download_video_from_twitter.py` —
-- [ ] `download_video_refactored_podjav.py` — *(already close to compliant; verification pass only)*
-- [ ] `download_video_via_ytdlp_or_aria2c.py` — *(reference-quality file; verification pass only)*
+- [ ] `download_video_via_ytdlp_or_aria2c.py` — 
+- [ ] `download_video_via_ytdlp_or_aria2c_v2.py` — 
 
 ## 3. `file_management/`
 
