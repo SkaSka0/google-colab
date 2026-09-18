@@ -13,7 +13,7 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done
 ## 1. `audio_processing/`
 
 - [x] `convert_audio_to_aac.py` —
-- [ ] `extract_audio_from_video.py` —
+- [x] `extract_audio_from_video.py` —
 - [ ] `fix_mono_audio_channel.py` —
 - [ ] `merge_audio_with_crossfade.py` —
 - [ ] `separate_vocals_from_instrumental.py` —
