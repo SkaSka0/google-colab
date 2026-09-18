@@ -1,28 +1,28 @@
 # Media Toolkit — Google Colab Scripts
 
-> ⚠️ **Sebelum melakukan refactor atau kontribusi apa pun**, baca [`docs/INSTRUCTION.md`](./docs/INSTRUCTION.md) dan [`CONTRIBUTING.md`](./CONTRIBUTING.md) terlebih dahulu. Jika menggunakan AI assistant, lihat juga [`AGENTS.md`](./AGENTS.md).
+> ⚠️ **Before doing any refactoring or contribution**, read [`docs/INSTRUCTION.md`](./docs/INSTRUCTION.md) and [`CONTRIBUTING.md`](./CONTRIBUTING.md) first. If you're using an AI assistant, also see [`AGENTS.md`](./AGENTS.md).
 
-Kumpulan script Python untuk kebutuhan download, upload, dan pengolahan
-media (audio & video), dirancang khusus untuk dijalankan di **Google
-Colab**. Setiap script bersifat *standalone* — dijalankan sebagai satu
-cell notebook tersendiri menggunakan form input `#@param`, bukan
-package Python yang saling import satu sama lain.
+A collection of Python scripts for downloading, uploading, and
+processing media (audio & video), designed specifically to run on
+**Google Colab**. Each script is standalone — run as a single notebook
+cell using `#@param` form inputs, not a Python package that imports
+from other scripts.
 
-## 🎯 Tentang Repo Ini
+## 🎯 About This Repo
 
-Repo ini adalah gabungan berbagai tools yang biasa dipakai dalam alur
-kerja pemrosesan video/audio di Colab — mulai dari mengunduh file dari
-berbagai sumber, memisahkan atau menggabungkan audio, muxing subtitle,
-transkripsi otomatis, sampai upload hasil akhir ke YouTube/Facebook.
-Selain itu ada juga proyek bot Telegram (`Telegram-Leecher` dan
-`Telegram-Fetcher`) yang juga berjalan di atas Google Colab untuk
-transfer file via Telegram.
+This repo bundles various tools commonly used in a Colab video/audio
+processing workflow — from downloading files from various sources,
+splitting or merging audio, muxing subtitles, automatic transcription,
+to uploading the final result to YouTube/Facebook. It also includes
+two Telegram bot projects (`Telegram-Leecher` and `Telegram-Fetcher`)
+that also run on top of Google Colab for file transfer via Telegram.
 
-Karena sifatnya kumpulan script lepas (bukan satu aplikasi terpadu),
-setiap file bisa dipakai secara independen sesuai kebutuhan — cukup
-copy-paste ke satu cell Colab, isi parameter di form, lalu jalankan.
+Because it's a collection of loose scripts (not one unified
+application), each file can be used independently as needed — just
+copy-paste it into a single Colab cell, fill in the form parameters,
+and run it.
 
-## 📁 Struktur Folder
+## 📁 Folder Structure
 
 ```
 media_toolkit/
@@ -67,31 +67,38 @@ media_toolkit/
 │   ├── rename_files_sequentially.py
 │   └── extract_or_compress_archive.py
 │
-├── Telegram-Leecher/       # Bot Telegram untuk transfer file ke Telegram/Google Drive
-├── Telegram-Fetcher/       # Bot Telegram untuk menarik file dari chat ke penyimpanan Colab
+├── Telegram-Leecher/       # Telegram bot for transferring files to Telegram/Google Drive
+├── Telegram-Fetcher/       # Telegram bot for pulling files from chat into Colab storage
 │
 └── docs/
-    └── INSTRUCTION.md      # Panduan umum refactoring & coding style untuk repo ini
+    ├── INSTRUCTION.md      # General refactoring & coding style guide for this repo
+    ├── ROADMAP.md          # Refactor priorities & reasoning for the folders above
+    └── PROGRESS.md         # Per-file refactor status checklist
 ```
 
-## ⚙️ Cara Pakai
+## ⚙️ How to Use
 
-1. Buka Google Colab, buat notebook baru (atau pakai notebook yang
-   sudah tersedia).
-2. Copy isi salah satu script ke satu cell.
-3. Sesuaikan nilai parameter di bagian `#@param` sesuai kebutuhan
-   (path input/output, opsi, dll).
-4. Jalankan cell — dependency yang dibutuhkan (ffmpeg, aria2c, yt-dlp,
-   dsb.) akan otomatis dicek dan diinstall jika belum tersedia.
+1. Open Google Colab, create a new notebook (or use an existing one).
+2. Copy the contents of one script into a single cell.
+3. Adjust the parameter values in the `#@param` section as needed
+   (input/output paths, options, etc).
+4. Run the cell — required dependencies (ffmpeg, aria2c, yt-dlp, etc.)
+   are checked and installed automatically if not already available.
 
-## 📝 Catatan
+## 📝 Notes
 
-- Semua script mengasumsikan environment **Google Colab** (memakai
-  path `/content/...`, `google.colab.drive`, `google.colab.userdata`,
-  dsb.) dan tidak ditujukan untuk portable ke environment lain.
-- `Telegram-Leecher` dan `Telegram-Fetcher` adalah proyek bot yang
-  lebih terstruktur (punya package Python sendiri) — lihat
-  `ROADMAP.md`, `PROGRESS.md`, dan `TESTING.md` di masing-masing
-  folder untuk status pengembangannya.
-- `docs/INSTRUCTION.md` berisi panduan gaya coding & refactoring yang
-  dipakai sebagai acuan saat merapikan script-script di repo ini.
+- All scripts assume a **Google Colab** environment (they use
+  `/content/...` paths, `google.colab.drive`, `google.colab.userdata`,
+  etc.) and are not intended to be portable to other environments.
+- `Telegram-Leecher` and `Telegram-Fetcher` are more structured bot
+  projects (each has its own Python package) — see `ROADMAP.md`,
+  `PROGRESS.md`, and `TESTING.md` in their respective folders for
+  development status.
+- For the standalone script folders above (`downloaders/`,
+  `uploaders/`, `audio_processing/`, etc.), refactor status and
+  priorities are tracked centrally in [`docs/ROADMAP.md`](./docs/ROADMAP.md)
+  (reasoning & ordering) and [`docs/PROGRESS.md`](./docs/PROGRESS.md)
+  (per-file checklist) — unlike the per-folder pattern used in
+  `Telegram-Leecher`/`Telegram-Fetcher`.
+- `docs/INSTRUCTION.md` contains the coding & refactoring style guide
+  used as the reference when cleaning up the scripts in this repo.
