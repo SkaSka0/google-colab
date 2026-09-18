@@ -55,16 +55,12 @@ BATCH_CHECKPOINT_SIZE = 5
 # -------------------- Download URL ---------------
 
 DOWNLOAD_URL_TEMPLATE = (
-    'https://play.podjav.tv/file/movie-podjav/{code}/720p/720p.m3u8'
 )
 
 
 # -------------------- Title Sources ---------------
 
 SOURCE_URL_TEMPLATES = [
-    'https://123av.com/en/v/{code}',
-    'https://missav.ws/dm2/en/{code}',
-    'https://podjav.tv/movies/{code}/',
 ]
 
 
