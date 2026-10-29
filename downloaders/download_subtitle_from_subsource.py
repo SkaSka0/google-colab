@@ -60,6 +60,8 @@ mode = "search_only"  #@param ["search_only", "download"]
 download_selection = "1"  #@param {type:"string"}
 output_dir = "/content/media_toolkit/subtitle"  #@param {type:"string"}
 extract_zip = True  #@param {type:"boolean"}
+#@markdown Print the first 5 blocks of each saved subtitle file (.srt, .vtt, .ass, ...).
+show_preview = True  #@param {type:"boolean"}
 
 #@markdown ---
 #@markdown Print the complete JSON returned by the movie and subtitle searches.
@@ -86,6 +88,9 @@ DOWNLOAD_DELAY_SECONDS = 1.1
 
 SUBTITLE_EXTENSIONS = (".srt", ".vtt", ".ass", ".ssa", ".sub")
 DEFAULT_SUBTITLE_EXTENSION = ".srt"
+PREVIEW_BLOCK_COUNT = 5
+PREVIEW_MAX_LINE_LENGTH = 100
+ASS_OVERRIDE_TAG_PATTERN = re.compile(r"\{[^}]*\}")
 
 
 # ============================================================
@@ -120,6 +125,7 @@ class DownloadOptions:
     selection: str = "1"
     output_dir: str = ""
     extract_zip: bool = True
+    show_preview: bool = True
 
 
 @dataclass
@@ -161,6 +167,7 @@ def _create_app_config() -> AppConfig:
             selection=download_selection.strip(),
             output_dir=output_dir,
             extract_zip=extract_zip,
+            show_preview=show_preview,
         ),
         show_full_json_response=show_full_json_response,
         debug_raw_response=debug_raw_response,
@@ -662,6 +669,129 @@ def download_subtitle(api_key: str, movie_title: str, sub: dict, options: Downlo
     )
 
 
+# ============================================================
+# SUBTITLE PREVIEW
+# ============================================================
+
+def _decode_subtitle_bytes(raw: bytes) -> str:
+    """Decode subtitle bytes: UTF-16 by BOM, then UTF-8, then Windows-1252 as a last resort."""
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return raw.decode("utf-16", errors="replace")
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return raw.decode("cp1252", errors="replace")
+
+
+def _read_subtitle_text(path: str) -> str | None:
+    """Read a subtitle file as text. Returns None (after a warning) if it cannot be read."""
+    try:
+        with open(path, "rb") as f:
+            raw = f.read()
+    except OSError as e:
+        log(f"Cannot read {path} for preview: {e}", "WARNING")
+        return None
+    return _decode_subtitle_bytes(raw)
+
+
+def _extract_block_cues(text: str) -> list[str]:
+    """Split SRT/VTT text into cue blocks, skipping headers and notes (blocks without '-->')."""
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    blocks = [block.strip("\n") for block in re.split(r"\n\s*\n", normalized) if block.strip()]
+    return [
+        block for block in blocks
+        if "-->" in block and not block.lstrip().upper().startswith("NOTE")
+    ]
+
+
+def _extract_ass_cues(text: str) -> list[str]:
+    """Collect 'Dialogue:' lines of an ASS/SSA file as 'start --> end' + plain text blocks."""
+    start_index, end_index, text_index, field_count = 1, 2, 9, 10  # default [Events] layout
+    in_events = False
+    cues = []
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        lowered = stripped.lower()
+
+        if lowered == "[events]":
+            in_events = True
+            continue
+        if stripped.startswith("["):
+            in_events = False
+            continue
+        if not in_events:
+            continue
+
+        if lowered.startswith("format:"):
+            fields = [name.strip().lower() for name in stripped.split(":", 1)[1].split(",")]
+            if {"start", "end", "text"} <= set(fields):
+                start_index = fields.index("start")
+                end_index = fields.index("end")
+                text_index = fields.index("text")
+                field_count = len(fields)
+            continue
+
+        if lowered.startswith("dialogue:"):
+            parts = stripped.split(":", 1)[1].lstrip().split(",", field_count - 1)
+            if len(parts) < field_count:
+                continue
+            body = ASS_OVERRIDE_TAG_PATTERN.sub("", parts[text_index])
+            body = body.replace("\\N", "\n").replace("\\n", "\n")
+            cues.append(f"{parts[start_index].strip()} --> {parts[end_index].strip()}\n{body}")
+
+    return cues
+
+
+def _extract_cues(text: str, extension: str) -> list[str]:
+    """Return the subtitle cues of a file, using the parser that matches its extension."""
+    if extension in (".ass", ".ssa"):
+        return _extract_ass_cues(text)
+    if extension == ".sub":
+        # MicroDVD: one cue per line, e.g. '{start}{end}text'.
+        return [line for line in text.splitlines() if line.strip()]
+    return _extract_block_cues(text)
+
+
+def _shorten_line(line: str) -> str:
+    if len(line) <= PREVIEW_MAX_LINE_LENGTH:
+        return line
+    return line[:PREVIEW_MAX_LINE_LENGTH - 3] + "..."
+
+
+def _print_subtitle_preview(path: str, max_blocks: int = PREVIEW_BLOCK_COUNT) -> None:
+    """Print the first subtitle blocks of a saved file. Skips non-subtitle extensions (e.g. .zip)."""
+    extension = os.path.splitext(path)[1].lower()
+    if extension not in SUBTITLE_EXTENSIONS:
+        return
+
+    text = _read_subtitle_text(path)
+    if text is None:
+        return
+
+    name = os.path.basename(path)
+    if extension == ".sub" and "\x00" in text:
+        log(f"Preview skipped (binary subtitle): {name}", "WARNING")
+        return
+
+    cues = _extract_cues(text, extension)
+    if not cues:
+        # Typical for archives that only hold a README/notes file instead of real subtitles.
+        log(f"No subtitle blocks found in {name}; it may not be a real subtitle file.", "WARNING")
+        for line in [line for line in text.splitlines() if line.strip()][:3]:
+            print(f"       {_shorten_line(line.strip())}")
+        return
+
+    shown = cues[:max_blocks]
+    log(f"Preview of {name} (first {len(shown)} of {len(cues)} blocks):")
+    print("-" * 80)
+    print("\n\n".join(
+        "\n".join(_shorten_line(line) for line in cue.splitlines())
+        for cue in shown
+    ))
+    print("-" * 80)
+
+
 def _download_selected(api_key: str, movie_title: str, subtitles: list[dict], options: DownloadOptions) -> None:
     """Download every subtitle chosen by options.selection and print a summary."""
     indices = _parse_selection(options.selection, len(subtitles))
@@ -676,6 +806,9 @@ def _download_selected(api_key: str, movie_title: str, subtitles: list[dict], op
         saved = download_subtitle(api_key, movie_title, subtitles[index], options)
         if saved:
             all_saved.extend(saved)
+            if options.show_preview:
+                for saved_path in saved:
+                    _print_subtitle_preview(saved_path)
         else:
             failed += 1
 
