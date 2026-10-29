@@ -22,9 +22,11 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done
 ## 2. `downloaders/`
 
 - [ ] `download_file_via_requests_or_aria2c.py` —
+- [x] `download_subtitle_from_subdl.py` — 2026-10-29: new script (SubDL API v2) written to `INSTRUCTION.md` rules rather than refactored; verified with a real Colab run
+- [x] `download_subtitle_from_subsource.py` — 2026-10-29: new script (SubSource API) written to `INSTRUCTION.md` rules rather than refactored; verified with a real Colab run
 - [ ] `download_video_from_twitter.py` —
-- [ ] `download_video_via_ytdlp_or_aria2c.py` — 
-- [ ] `download_video_via_ytdlp_or_aria2c_v2.py` — 
+- [ ] `download_video_via_ytdlp_or_aria2c.py` —
+- [ ] `download_video_via_ytdlp_or_aria2c_v2.py` —
 
 ## 3. `file_management/`
 
@@ -62,9 +64,9 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done
 
 ## Summary
 
-- Total files tracked: **27** (26 located + 1 pending location)
-- Done: **0**
+- Total files tracked: **29** (28 located + 1 pending location)
+- Done: **4**
 - In progress: **0**
-- Not started: **27**
+- Not started: **25**
 
 Update the summary counts whenever a checkbox changes.
